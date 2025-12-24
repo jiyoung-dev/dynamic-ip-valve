@@ -1,0 +1,102 @@
+package org.example.security;
+
+import org.apache.catalina.connector.Request;
+import org.apache.catalina.connector.Response;
+import org.apache.catalina.valves.ValveBase;
+import org.apache.juli.logging.Log;
+import org.apache.juli.logging.LogFactory;
+
+import javax.naming.Context;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServletResponse;
+import javax.sql.DataSource;
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+public class DynamicRemoteAddrValve extends ValveBase {
+  private static final String DEFAULT_ALLOW_QUERY = "";
+
+  private volatile DataSource dataSource;
+  private String dataSourceJndiName;
+  private String allowedIpQuery = DEFAULT_ALLOW_QUERY;
+
+  private static final Log log = LogFactory.getLog(DynamicRemoteAddrValve.class);
+
+  public void setDataSourceJndiName(String jndiName) {
+    this.dataSourceJndiName = jndiName;
+  }
+
+  public void setAllowedIpQuery(String allowedIpQuery) {
+    if (allowedIpQuery != null && !allowedIpQuery.trim().isEmpty()) {
+      this.allowedIpQuery = allowedIpQuery;
+    }
+  }
+
+  @Override
+  public void invoke(Request request, Response response) throws IOException, ServletException {
+    String clientIp = request.getRemoteAddr();
+    log.info("Request received from ip=" + clientIp);
+    if (!isAllowed(clientIp)) {
+      log.warn("Blocking ip=" + clientIp);
+      response.sendError(HttpServletResponse.SC_FORBIDDEN, "IP not allowed: " + clientIp);
+      return;
+    }
+
+    log.info("Request from ip=" + clientIp + " allowed");
+    getNext().invoke(request, response);
+  }
+
+  private boolean isAllowed(String ip) {
+    boolean allowed = checkUserIp(ip);
+    log.info("checkUserIp returned allowed=" + allowed + " for ip=" + ip);
+    return allowed;
+  }
+
+  private boolean checkUserIp(String ip) {
+    if (allowedIpQuery == null || allowedIpQuery.trim().isEmpty()) {
+      log.error("No allowedIpQuery configured for DynamicRemoteAddrValve");
+      return false;
+    }
+
+    try (Connection conn = getDataSource().getConnection();
+         PreparedStatement ps = conn.prepareStatement(allowedIpQuery)) {
+      ps.setString(1, ip);
+      log.info("Executing ip lookup for ip=" + ip);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    } catch (SQLException e) {
+      log.error("Failed to query for IP = " + ip, e);
+      return false;
+    }
+  }
+
+  private DataSource getDataSource() {
+    if (dataSource == null) {
+      synchronized (this) {
+        if (dataSource == null) {
+          dataSource = lookupDataSource();
+        }
+      }
+    }
+    return dataSource;
+  }
+
+  private DataSource lookupDataSource() {
+    if (dataSourceJndiName == null || dataSourceJndiName.trim().isEmpty()) {
+      throw new IllegalStateException("dataSourceJndiName must be configured for DynamicRemoteAddrValve");
+    }
+
+    try {
+      Context context = new InitialContext();
+      return (DataSource) context.lookup(dataSourceJndiName);
+    } catch (NamingException e) {
+      throw new IllegalStateException("Unable to look up DataSource via JNDI: " + dataSourceJndiName, e);
+    }
+  }
+}
