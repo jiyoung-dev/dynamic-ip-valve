@@ -17,15 +17,16 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ClientIpCheckValve extends ValveBase {
   private volatile DataSource dataSource;
   private String dataSourceJndiName;
   private String allowedIpQuery;
-  private static ConcurrentHashMap<String, String> allowedIpList = new ConcurrentHashMap<>();
 
   private static final Log log = LogFactory.getLog(ClientIpCheckValve.class);
+  private static final Set<String> allowedIpCache = ConcurrentHashMap.newKeySet();
 
   public void setDataSourceJndiName(String jndiName) {
     if (jndiName != null && !jndiName.trim().isEmpty()) {
@@ -58,6 +59,16 @@ public class ClientIpCheckValve extends ValveBase {
   }
 
   private boolean isAllowed(String ip) {
+    if (ip == null || ip.isEmpty()) {
+      log.warn("Received null 'ip' parameter");
+      return false;
+    }
+
+    if (allowedIpCache.contains(ip)) {
+      log.info("IP found in cache, allowing=" + ip);
+      return true;
+    }
+
     if (allowedIpQuery == null || allowedIpQuery.isEmpty()) {
       log.error("No allowedIpQuery configured for ClientIpCheckValve");
       return false;
@@ -67,9 +78,14 @@ public class ClientIpCheckValve extends ValveBase {
          PreparedStatement ps = conn.prepareStatement(allowedIpQuery)) {
       ps.setString(1, ip);
       log.info("Executing ip lookup for ip=" + ip);
+
       try (ResultSet rs = ps.executeQuery()) {
         boolean allowed = rs.next();
         log.info("checkUserIp returned allowed=" + allowed + " for ip=" + ip);
+        if (allowed) {
+          allowedIpCache.add(ip);
+          log.info("Registered ip in cache=" + ip);
+        }
         return allowed;
       }
     } catch (SQLException e) {
