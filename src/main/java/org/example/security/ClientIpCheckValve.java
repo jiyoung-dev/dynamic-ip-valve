@@ -17,23 +17,29 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.concurrent.ConcurrentHashMap;
 
-public class DynamicRemoteAddrValve extends ValveBase {
-  private static final String DEFAULT_ALLOW_QUERY = "";
-
+public class ClientIpCheckValve extends ValveBase {
   private volatile DataSource dataSource;
   private String dataSourceJndiName;
-  private String allowedIpQuery = DEFAULT_ALLOW_QUERY;
+  private String allowedIpQuery;
+  private static ConcurrentHashMap<String, String> allowedIpList = new ConcurrentHashMap<>();
 
-  private static final Log log = LogFactory.getLog(DynamicRemoteAddrValve.class);
+  private static final Log log = LogFactory.getLog(ClientIpCheckValve.class);
 
   public void setDataSourceJndiName(String jndiName) {
-    this.dataSourceJndiName = jndiName;
+    if (jndiName != null && !jndiName.trim().isEmpty()) {
+      this.dataSourceJndiName = jndiName.trim();
+    } else {
+      this.dataSourceJndiName = null;
+    }
   }
 
   public void setAllowedIpQuery(String allowedIpQuery) {
     if (allowedIpQuery != null && !allowedIpQuery.trim().isEmpty()) {
-      this.allowedIpQuery = allowedIpQuery;
+      this.allowedIpQuery = allowedIpQuery.trim();
+    } else {
+      this.allowedIpQuery = null;
     }
   }
 
@@ -52,14 +58,8 @@ public class DynamicRemoteAddrValve extends ValveBase {
   }
 
   private boolean isAllowed(String ip) {
-    boolean allowed = checkUserIp(ip);
-    log.info("checkUserIp returned allowed=" + allowed + " for ip=" + ip);
-    return allowed;
-  }
-
-  private boolean checkUserIp(String ip) {
-    if (allowedIpQuery == null || allowedIpQuery.trim().isEmpty()) {
-      log.error("No allowedIpQuery configured for DynamicRemoteAddrValve");
+    if (allowedIpQuery == null || allowedIpQuery.isEmpty()) {
+      log.error("No allowedIpQuery configured for ClientIpCheckValve");
       return false;
     }
 
@@ -68,7 +68,9 @@ public class DynamicRemoteAddrValve extends ValveBase {
       ps.setString(1, ip);
       log.info("Executing ip lookup for ip=" + ip);
       try (ResultSet rs = ps.executeQuery()) {
-        return rs.next();
+        boolean allowed = rs.next();
+        log.info("checkUserIp returned allowed=" + allowed + " for ip=" + ip);
+        return allowed;
       }
     } catch (SQLException e) {
       log.error("Failed to query for IP = " + ip, e);
@@ -89,7 +91,7 @@ public class DynamicRemoteAddrValve extends ValveBase {
 
   private DataSource lookupDataSource() {
     if (dataSourceJndiName == null || dataSourceJndiName.trim().isEmpty()) {
-      throw new IllegalStateException("dataSourceJndiName must be configured for DynamicRemoteAddrValve");
+      throw new IllegalStateException("dataSourceJndiName must be configured for ClientIpCheckValve");
     }
 
     try {
